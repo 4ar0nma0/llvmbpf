@@ -56,6 +56,7 @@ endif()
 
 option(ENABLE_LLVM_SHARED "Link shared library of LLVM" NO)
 option(BUILD_LLVM_AOT_CLI "Build AOT cli, which rely on libbpf" NO)
+option(BPFTIME_ENABLE_LLVM_PRELOAD "Enable openEuler-specific LLVM preload workaround" OFF)
 
 if(ENABLE_LLVM_SHARED)
     list(PREPEND LLVM_LIBS LLVM)
@@ -156,6 +157,9 @@ target_include_directories(llvmbpf_vm
     PRIVATE ${LLVM_INCLUDE_DIRS} ${SPDLOG_INCLUDE} ${Boost_INCLUDE} ../include include # LLVM jit also used these headers
 )
 add_dependencies(llvmbpf_vm spdlog::spdlog)
+if(BPFTIME_ENABLE_LLVM_PRELOAD)
+    target_compile_definitions(llvmbpf_vm PRIVATE BPFTIME_ENABLE_LLVM_PRELOAD=1)
+endif()
 
 # SPIR-V support requires LLVM 18+ (native backend in LLVM 20+)
 if(LLVMBPF_ENABLE_SPIRV)
