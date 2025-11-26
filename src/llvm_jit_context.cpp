@@ -304,8 +304,13 @@ std::vector<uint8_t> llvm_bpf_jit_context::do_aot_compile(
 	SPDLOG_DEBUG("AOT: start");
 	if (auto module = generateModule(extFuncNames, lddwHelpers, false);
 	    module) {
+#if LLVM_VERSION_MAJOR >= 15
+		llvm::Triple defaultTargetTriple(llvm::sys::getDefaultTargetTriple());
+		SPDLOG_DEBUG("AOT: target triple: {}", defaultTargetTriple.str());
+#else
 		auto defaultTargetTriple = llvm::sys::getDefaultTargetTriple();
 		SPDLOG_DEBUG("AOT: target triple: {}", defaultTargetTriple);
+#endif
 		return module->withModuleDo([&](auto &module)
 						    -> std::vector<uint8_t> {
 			if (print_ir) {
