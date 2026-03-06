@@ -5,6 +5,7 @@
 #include <optional>
 #include <vector>
 #include <ebpf_inst.h>
+#include <cstdint>
 #include <string>
 
 #ifndef MAX_EXT_FUNCS
@@ -17,6 +18,11 @@ namespace bpftime
 struct external_function {
 	std::string name;
 	void *fn;
+};
+
+struct compiled_code {
+	const uint8_t *data = nullptr;
+	size_t size = 0;
 };
 
 class llvm_bpf_jit_context;
@@ -69,6 +75,9 @@ class llvmbpf_vm {
 	// Compile the eBPF program into a JITed function
 	// return the JITed function if success
 	std::optional<precompiled_ebpf_function> compile() noexcept;
+
+	// Return the compiled native code pointer and size after compile()
+	std::optional<compiled_code> get_compiled_code() noexcept;
 
 	// See the spec for details.
 	// If the code involve array map access, the map_val function
