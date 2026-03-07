@@ -168,6 +168,20 @@ std::optional<bpftime::precompiled_ebpf_function> llvmbpf_vm::compile() noexcept
 	}
 }
 
+int llvmbpf_vm::set_optimization_level(int level) noexcept
+{
+	if (level < 0 || level > 3) {
+		error_msg = "Optimization level must be between 0 and 3";
+		return -EINVAL;
+	}
+	if (jitted_function) {
+		error_msg = "Cannot change optimization level after compile";
+		return -EBUSY;
+	}
+	optimization_level = level;
+	return 0;
+}
+
 std::optional<compiled_code> llvmbpf_vm::get_compiled_code() noexcept
 {
 	if (!jitted_function) {

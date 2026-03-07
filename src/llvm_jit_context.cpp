@@ -195,7 +195,7 @@ struct spin_lock_guard {
 	}
 };
 
-static void optimizeModule(llvm::Module &M)
+static void optimizeModule(llvm::Module &M, int opt_level)
 {
 	// std::cout << "LLVM_VERSION_MAJOR: " << LLVM_VERSION_MAJOR <<
 	// std::endl;
@@ -222,10 +222,25 @@ static void optimizeModule(llvm::Module &M)
 	PB.registerLoopAnalyses(LAM);
 	PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
-	// Create the pass manager.
-	// This one corresponds to a typical -O2 optimization pipeline.
+	llvm::OptimizationLevel optimization_level = llvm::OptimizationLevel::O3;
+	switch (opt_level) {
+	case 0:
+		optimization_level = llvm::OptimizationLevel::O0;
+		break;
+	case 1:
+		optimization_level = llvm::OptimizationLevel::O1;
+		break;
+	case 2:
+		optimization_level = llvm::OptimizationLevel::O2;
+		break;
+	case 3:
+	default:
+		optimization_level = llvm::OptimizationLevel::O3;
+		break;
+	}
+
 	ModulePassManager MPM =
-		PB.buildPerModuleDefaultPipeline(OptimizationLevel::O3);
+		PB.buildPerModuleDefaultPipeline(optimization_level);
 
 	// Optimize the IR!
 	MPM.run(M, MAM);
@@ -234,7 +249,7 @@ static void optimizeModule(llvm::Module &M)
 	llvm::legacy::PassManager PM;
 
 	llvm::PassManagerBuilder PMB;
-	PMB.OptLevel = 3;
+	PMB.OptLevel = opt_level;
 	PMB.populateModulePassManager(PM);
 
 	PM.run(M);
@@ -283,7 +298,9 @@ llvm::Error llvm_bpf_jit_context::do_jit_compile()
 	// If successful, get the module
 	auto bpfModule = std::move(*bpfModuleOrErr);
 	// Optimize the module
-	bpfModule.withModuleDo([](auto &M) { optimizeModule(M); });
+	bpfModule.withModuleDo([&](auto &M) {
+		optimizeModule(M, vm.optimization_level);
+	});
 	// Handle the error from addIRModule
 	if (auto err = jit->addIRModule(std::move(bpfModule))) {
 		return err;
@@ -316,7 +333,7 @@ std::vector<uint8_t> llvm_bpf_jit_context::do_aot_compile(
 			if (print_ir) {
 				module.print(llvm::outs(), nullptr);
 			}
-			optimizeModule(module);
+			optimizeModule(module, vm.optimization_level);
 			module.setTargetTriple(defaultTargetTriple);
 			std::string error;
 			auto target = TargetRegistry::lookupTarget(
@@ -696,7 +713,7 @@ llvm_bpf_jit_context::generate_ptx(bool main_with_arguments,
 	// Optimize the module
 	return bpfModule.withModuleDo([&](auto &M) {
 		M.setDataLayout(targetMachine->createDataLayout());
-		optimizeModule(M);
+		optimizeModule(M, vm.optimization_level);
 
 		llvm::legacy::PassManager passManager;
 #if LLVM_VERSION_MAJOR > 17
@@ -792,7 +809,7 @@ llvm_bpf_jit_context::generate_spirv(bool main_with_arguments,
 		M.setDataLayout(targetMachine->createDataLayout());
 
 		// Run optimizations to clean up unreachable blocks and simplify code
-		optimizeModule(M);
+		optimizeModule(M, vm.optimization_level);
 
 		llvm::legacy::PassManager passManager;
 #if LLVM_VERSION_MAJOR > 17
