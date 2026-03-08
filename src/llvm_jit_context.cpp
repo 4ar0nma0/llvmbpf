@@ -51,6 +51,7 @@
 #include <typeinfo>
 #include <llvm-c/ExecutionEngine.h>
 #include "llvm/LTO/LTOBackend.h"
+#include "llvm/IR/PassInstrumentation.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"
@@ -195,11 +196,34 @@ struct spin_lock_guard {
 	}
 };
 
-static void optimizeModule(llvm::Module &M, int opt_level)
+static void optimizeModule(llvm::Module &M, int opt_level,
+			   const std::vector<std::string> &disabled_passes,
+			   bool log_passes)
 {
 	// std::cout << "LLVM_VERSION_MAJOR: " << LLVM_VERSION_MAJOR <<
 	// std::endl;
 #if LLVM_VERSION_MAJOR >= 17
+	PassInstrumentationCallbacks PIC;
+	if (!disabled_passes.empty()) {
+		PIC.registerShouldRunOptionalPassCallback(
+			[&disabled_passes](StringRef pass_name, Any) {
+				for (const auto &disabled : disabled_passes) {
+					if (pass_name.contains(
+						    StringRef(disabled))) {
+						return false;
+					}
+				}
+				return true;
+			});
+	}
+	if (log_passes) {
+		PIC.registerBeforeNonSkippedPassCallback(
+			[](StringRef pass_name, Any) {
+				llvm::errs() << "[llvmbpf pass] "
+					     << pass_name << "\n";
+			});
+	}
+
 	// =====================
 	// Create the analysis managers.
 	// These must be declared in this order so that they are destroyed in
@@ -213,7 +237,7 @@ static void optimizeModule(llvm::Module &M, int opt_level)
 	// Take a look at the PassBuilder constructor parameters for more
 	// customization, e.g. specifying a TargetMachine or various debugging
 	// options.
-	PassBuilder PB;
+	PassBuilder PB(nullptr, PipelineTuningOptions(), std::nullopt, &PIC);
 
 	// Register all the basic analyses with the managers.
 	PB.registerModuleAnalyses(MAM);
@@ -246,6 +270,8 @@ static void optimizeModule(llvm::Module &M, int opt_level)
 	MPM.run(M, MAM);
 	// =====================================
 #else
+	(void)disabled_passes;
+	(void)log_passes;
 	llvm::legacy::PassManager PM;
 
 	llvm::PassManagerBuilder PMB;
@@ -299,7 +325,8 @@ llvm::Error llvm_bpf_jit_context::do_jit_compile()
 	auto bpfModule = std::move(*bpfModuleOrErr);
 	// Optimize the module
 	bpfModule.withModuleDo([&](auto &M) {
-		optimizeModule(M, vm.optimization_level);
+		optimizeModule(M, vm.optimization_level, vm.disabled_passes_,
+			       vm.log_passes_);
 	});
 	// Handle the error from addIRModule
 	if (auto err = jit->addIRModule(std::move(bpfModule))) {
@@ -333,7 +360,8 @@ std::vector<uint8_t> llvm_bpf_jit_context::do_aot_compile(
 			if (print_ir) {
 				module.print(llvm::outs(), nullptr);
 			}
-			optimizeModule(module, vm.optimization_level);
+			optimizeModule(module, vm.optimization_level,
+				       vm.disabled_passes_, vm.log_passes_);
 			module.setTargetTriple(defaultTargetTriple);
 			std::string error;
 			auto target = TargetRegistry::lookupTarget(
@@ -713,7 +741,8 @@ llvm_bpf_jit_context::generate_ptx(bool main_with_arguments,
 	// Optimize the module
 	return bpfModule.withModuleDo([&](auto &M) {
 		M.setDataLayout(targetMachine->createDataLayout());
-		optimizeModule(M, vm.optimization_level);
+		optimizeModule(M, vm.optimization_level, vm.disabled_passes_,
+			       vm.log_passes_);
 
 		llvm::legacy::PassManager passManager;
 #if LLVM_VERSION_MAJOR > 17
@@ -809,7 +838,8 @@ llvm_bpf_jit_context::generate_spirv(bool main_with_arguments,
 		M.setDataLayout(targetMachine->createDataLayout());
 
 		// Run optimizations to clean up unreachable blocks and simplify code
-		optimizeModule(M, vm.optimization_level);
+		optimizeModule(M, vm.optimization_level, vm.disabled_passes_,
+			       vm.log_passes_);
 
 		llvm::legacy::PassManager passManager;
 #if LLVM_VERSION_MAJOR > 17

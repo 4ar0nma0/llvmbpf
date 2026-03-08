@@ -78,6 +78,10 @@ class llvmbpf_vm {
 
 	// Configure the LLVM optimization level used for JIT/AOT compilation.
 	int set_optimization_level(int level) noexcept;
+	int set_disabled_passes(
+		const std::vector<std::string> &pass_names) noexcept;
+	int set_log_passes(bool enabled) noexcept;
+	const std::vector<std::string> &get_disabled_passes() const noexcept;
 
 	// Return the compiled native code pointer and size after compile()
 	std::optional<compiled_code> get_compiled_code() noexcept;
@@ -115,6 +119,8 @@ class llvmbpf_vm {
 
 	std::string error_msg;
 	int optimization_level = 3;
+	std::vector<std::string> disabled_passes_;
+	bool log_passes_ = false;
 
 	std::optional<precompiled_ebpf_function> jitted_function = std::nullopt;
 };

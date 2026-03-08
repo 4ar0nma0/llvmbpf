@@ -182,6 +182,29 @@ int llvmbpf_vm::set_optimization_level(int level) noexcept
 	return 0;
 }
 
+int llvmbpf_vm::set_disabled_passes(
+	const std::vector<std::string> &pass_names) noexcept
+{
+	if (jitted_function)
+		return -1;
+	disabled_passes_ = pass_names;
+	return 0;
+}
+
+int llvmbpf_vm::set_log_passes(bool enabled) noexcept
+{
+	if (jitted_function)
+		return -1;
+	log_passes_ = enabled;
+	return 0;
+}
+
+const std::vector<std::string> &
+llvmbpf_vm::get_disabled_passes() const noexcept
+{
+	return disabled_passes_;
+}
+
 std::optional<compiled_code> llvmbpf_vm::get_compiled_code() noexcept
 {
 	if (!jitted_function) {
