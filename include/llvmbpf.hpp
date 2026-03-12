@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 #include <ebpf_inst.h>
 #include <cstdint>
@@ -25,6 +26,15 @@ struct compiled_code {
 	size_t size = 0;
 };
 
+struct array_map_descriptor {
+	uint64_t map_handle = 0;
+	uint64_t value_base = 0;
+	uint32_t key_size = sizeof(uint32_t);
+	uint32_t value_size = 0;
+	uint32_t value_stride = 0;
+	uint32_t max_entries = 0;
+};
+
 class llvm_bpf_jit_context;
 
 // The JITed function signature.
@@ -41,6 +51,10 @@ class llvmbpf_vm {
 	// return 0 on success
 	int register_external_function(size_t index, const std::string &name,
 				       void *fn) noexcept;
+
+	// Register an array-map description that the JIT may use to inline
+	// bpf_map_lookup_elem helper calls for constant map handles.
+	int register_array_map(const array_map_descriptor &map) noexcept;
 
 	// load the eBPF bytecode into the vm
 	// The eBPF bytecode now can be JIT/AOT compiled
@@ -112,6 +126,7 @@ class llvmbpf_vm {
 	std::vector<ebpf_inst> instructions;
 
 	std::vector<std::optional<external_function> > ext_funcs;
+	std::unordered_map<uint64_t, array_map_descriptor> array_maps;
 
 	std::unique_ptr<llvm_bpf_jit_context> jit_ctx;
 

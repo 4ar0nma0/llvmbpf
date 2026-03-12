@@ -163,6 +163,7 @@
 #endif
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/Alignment.h>
 #ifdef BPFTIME_ENABLE_LLVM_PRELOAD
 #include <llvm/Support/DynamicLibrary.h>
 #endif
@@ -282,6 +283,124 @@ static void optimizeModule(llvm::Module &M, int opt_level,
 #endif
 }
 
+namespace {
+
+bool is_power_of_two_u32(uint32_t value)
+{
+	return value != 0 && (value & (value - 1)) == 0;
+}
+
+unsigned int ilog2_u32(uint32_t value)
+{
+	unsigned int shift = 0;
+	while (value > 1) {
+		value >>= 1;
+		shift++;
+	}
+	return shift;
+}
+
+} // namespace
+
+bool llvm_bpf_jit_context::inline_array_map_lookup_helpers(llvm::Module &module)
+{
+	if (vm.array_maps.empty()) {
+		return false;
+	}
+
+	auto *helperFunc = module.getFunction(ext_func_sym(1));
+	if (!helperFunc) {
+		return false;
+	}
+
+	std::vector<llvm::CallInst *> callSites;
+	for (auto &function : module) {
+		for (auto &block : function) {
+			for (auto &inst : block) {
+				auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+				if (!call ||
+				    call->getCalledFunction() != helperFunc) {
+					continue;
+				}
+				callSites.push_back(call);
+			}
+		}
+	}
+
+	bool changed = false;
+	for (auto *call : callSites) {
+		auto *mapHandle =
+			llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+		if (!mapHandle) {
+			continue;
+		}
+
+		const auto mapHandleValue = mapHandle->getZExtValue();
+		auto mapIter = vm.array_maps.find(mapHandleValue);
+		if (mapIter == vm.array_maps.end()) {
+			continue;
+		}
+
+		const auto &map = mapIter->second;
+		if (map.key_size != sizeof(uint32_t) || map.max_entries == 0) {
+			continue;
+		}
+		const uint32_t stride =
+			map.value_stride != 0 ? map.value_stride : map.value_size;
+		if (stride == 0) {
+			continue;
+		}
+
+		uint64_t valueBase = map.value_base;
+		if (valueBase == 0 && vm.map_val) {
+			valueBase = vm.map_val(map.map_handle);
+		}
+		if (valueBase == 0) {
+			continue;
+		}
+
+		llvm::IRBuilder<> builder(call);
+		auto *keyPtr = builder.CreateIntToPtr(
+			call->getArgOperand(1),
+			llvm::PointerType::getUnqual(builder.getInt32Ty()),
+			"array_lookup.key_ptr");
+		auto *index = builder.CreateLoad(builder.getInt32Ty(), keyPtr,
+						 "array_lookup.index");
+		index->setAlignment(llvm::Align(4));
+		auto *inRange = builder.CreateICmpULT(
+			index, builder.getInt32(map.max_entries),
+			"array_lookup.in_range");
+		llvm::Value *offset = builder.CreateZExt(
+			index, builder.getInt64Ty(), "array_lookup.index64");
+		if (is_power_of_two_u32(stride)) {
+			const auto shift = ilog2_u32(stride);
+			if (shift != 0) {
+				offset = builder.CreateShl(
+					offset, builder.getInt64(shift),
+					"array_lookup.offset");
+			}
+		} else {
+			offset = builder.CreateMul(
+				offset, builder.getInt64(stride),
+				"array_lookup.offset");
+		}
+		auto *address = builder.CreateAdd(
+			builder.getInt64(valueBase), offset, "array_lookup.addr");
+		auto *result = builder.CreateSelect(
+			inRange, address, builder.getInt64(0),
+			"array_lookup.result");
+
+		call->replaceAllUsesWith(result);
+		call->eraseFromParent();
+		changed = true;
+	}
+
+	if (changed) {
+		SPDLOG_DEBUG("Inlined array map lookup helper calls");
+	}
+	return changed;
+}
+
 #if defined(__arm__) || defined(_M_ARM)
 extern "C" void __aeabi_unwind_cpp_pr1();
 #endif
@@ -327,6 +446,10 @@ llvm::Error llvm_bpf_jit_context::do_jit_compile()
 	bpfModule.withModuleDo([&](auto &M) {
 		optimizeModule(M, vm.optimization_level, vm.disabled_passes_,
 			       vm.log_passes_);
+		if (inline_array_map_lookup_helpers(M)) {
+			optimizeModule(M, vm.optimization_level,
+				       vm.disabled_passes_, vm.log_passes_);
+		}
 	});
 	// Handle the error from addIRModule
 	if (auto err = jit->addIRModule(std::move(bpfModule))) {

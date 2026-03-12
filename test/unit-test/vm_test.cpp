@@ -329,6 +329,49 @@ uint64_t map_val(uint64_t val)
 	return 0;
 }
 
+namespace {
+
+uint8_t inline_bpf_mem[] = { 0x11, 0x22, 0x33, 0x44,
+			     0x55, 0x66, 0x77, 0x88 };
+uint32_t inline_ctl_array[2] = { 0, 0 };
+uint64_t inline_cntrs_array[2] = { 0, 0 };
+uint64_t inline_lookup_helper_calls = 0;
+
+void reset_inline_map_state()
+{
+	inline_ctl_array[0] = 0;
+	inline_ctl_array[1] = 0;
+	inline_cntrs_array[0] = 0;
+	inline_cntrs_array[1] = 0;
+	inline_lookup_helper_calls = 0;
+}
+
+void *counted_bpf_map_lookup_elem(uint64_t map_handle, void *key)
+{
+	inline_lookup_helper_calls++;
+	auto index = *reinterpret_cast<uint32_t *>(key);
+	if (map_handle == 5 && index < 2) {
+		return &inline_ctl_array[index];
+	}
+	if (map_handle == 6 && index < 2) {
+		return &inline_cntrs_array[index];
+	}
+	return nullptr;
+}
+
+uint64_t inline_map_val(uint64_t map_handle)
+{
+	if (map_handle == 5) {
+		return reinterpret_cast<uint64_t>(inline_ctl_array);
+	}
+	if (map_handle == 6) {
+		return reinterpret_cast<uint64_t>(inline_cntrs_array);
+	}
+	return 0;
+}
+
+} // namespace
+
 TEST_CASE("Test compile with no LDDW helper")
 {
 	bpftime::llvmbpf_vm vm;
@@ -369,4 +412,50 @@ TEST_CASE("Test compile with default LDDW helper")
 	auto func = vm.compile();
 	REQUIRE(func.has_value()); // Compilation should success because the
 				   // default helpers are provided
+}
+
+TEST_CASE("Test helper-based array lookup fallback path")
+{
+	bpftime::llvmbpf_vm vm;
+	uint64_t ret = 0;
+
+	reset_inline_map_state();
+	REQUIRE(vm.load_code(xdp_counter_bytecode,
+			     sizeof(xdp_counter_bytecode) - 1) == 0);
+	REQUIRE(vm.register_external_function(
+			1, "bpf_map_lookup_elem",
+			(void *)counted_bpf_map_lookup_elem) == 0);
+	vm.set_lddw_helpers(nullptr, nullptr, inline_map_val, nullptr,
+			    nullptr);
+
+	REQUIRE(vm.exec(inline_bpf_mem, sizeof(inline_bpf_mem), ret) == 0);
+	REQUIRE(inline_lookup_helper_calls == 1);
+	REQUIRE(inline_cntrs_array[0] == 1);
+}
+
+TEST_CASE("Test helper-based array lookup can be inlined")
+{
+	bpftime::llvmbpf_vm vm;
+	uint64_t ret = 0;
+
+	reset_inline_map_state();
+	REQUIRE(vm.load_code(xdp_counter_bytecode,
+			     sizeof(xdp_counter_bytecode) - 1) == 0);
+	REQUIRE(vm.register_external_function(
+			1, "bpf_map_lookup_elem",
+			(void *)counted_bpf_map_lookup_elem) == 0);
+	REQUIRE(vm.register_array_map(bpftime::array_map_descriptor{
+			.map_handle = 5,
+			.value_base =
+				reinterpret_cast<uint64_t>(inline_ctl_array),
+			.value_size = sizeof(uint32_t),
+			.value_stride = sizeof(uint32_t),
+			.max_entries = 2,
+		}) == 0);
+	vm.set_lddw_helpers(nullptr, nullptr, inline_map_val, nullptr,
+			    nullptr);
+
+	REQUIRE(vm.exec(inline_bpf_mem, sizeof(inline_bpf_mem), ret) == 0);
+	REQUIRE(inline_lookup_helper_calls == 0);
+	REQUIRE(inline_cntrs_array[0] == 1);
 }

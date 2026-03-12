@@ -98,6 +98,34 @@ int llvmbpf_vm::register_external_function(size_t index,
 	return 0;
 }
 
+int llvmbpf_vm::register_array_map(const array_map_descriptor &map) noexcept
+{
+	if (jitted_function) {
+		error_msg = "Cannot register array map after compile";
+		return -EBUSY;
+	}
+	if (map.key_size != sizeof(uint32_t)) {
+		error_msg = "Array map key_size must be 4 bytes";
+		return -EINVAL;
+	}
+	if (map.max_entries == 0) {
+		error_msg = "Array map max_entries must be non-zero";
+		return -EINVAL;
+	}
+	const uint32_t stride =
+		map.value_stride != 0 ? map.value_stride : map.value_size;
+	if (stride == 0) {
+		error_msg = "Array map value_size/value_stride must be non-zero";
+		return -EINVAL;
+	}
+	if (array_maps.contains(map.map_handle)) {
+		error_msg = "Array map already defined";
+		return -EEXIST;
+	}
+	array_maps.emplace(map.map_handle, map);
+	return 0;
+}
+
 int llvmbpf_vm::load_code(const void *code, size_t code_len) noexcept
 {
 	if (code_len % 8 != 0) {
