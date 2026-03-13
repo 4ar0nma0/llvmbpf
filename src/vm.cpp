@@ -210,6 +210,26 @@ int llvmbpf_vm::set_optimization_level(int level) noexcept
 	return 0;
 }
 
+int llvmbpf_vm::set_target_cpu(const std::string &cpu) noexcept
+{
+	if (jitted_function) {
+		error_msg = "Cannot change target CPU after compile";
+		return -EBUSY;
+	}
+	target_cpu_ = cpu;
+	return 0;
+}
+
+int llvmbpf_vm::set_target_features(const std::string &features) noexcept
+{
+	if (jitted_function) {
+		error_msg = "Cannot change target features after compile";
+		return -EBUSY;
+	}
+	target_features_ = features;
+	return 0;
+}
+
 int llvmbpf_vm::set_disabled_passes(
 	const std::vector<std::string> &pass_names) noexcept
 {
@@ -225,6 +245,16 @@ int llvmbpf_vm::set_log_passes(bool enabled) noexcept
 		return -1;
 	log_passes_ = enabled;
 	return 0;
+}
+
+const std::string &llvmbpf_vm::get_target_cpu() const noexcept
+{
+	return target_cpu_;
+}
+
+const std::string &llvmbpf_vm::get_target_features() const noexcept
+{
+	return target_features_;
 }
 
 const std::vector<std::string> &

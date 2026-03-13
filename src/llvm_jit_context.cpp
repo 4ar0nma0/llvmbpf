@@ -300,6 +300,75 @@ unsigned int ilog2_u32(uint32_t value)
 	return shift;
 }
 
+void apply_target_feature_overrides(llvm::SubtargetFeatures &features,
+				       const std::string &feature_overrides)
+{
+	size_t start = 0;
+	while (start <= feature_overrides.size()) {
+		const size_t comma = feature_overrides.find(',', start);
+		std::string token = feature_overrides.substr(
+			start,
+			comma == std::string::npos ? std::string::npos
+						   : comma - start);
+		const auto first = token.find_first_not_of(" \t");
+		if (first != std::string::npos) {
+			const auto last = token.find_last_not_of(" \t");
+			token = token.substr(first, last - first + 1);
+		} else {
+			token.clear();
+		}
+
+		if (!token.empty()) {
+			bool enable = true;
+			if (token.front() == '+' || token.front() == '-') {
+				enable = token.front() != '-';
+				token.erase(token.begin());
+			}
+			if (!token.empty()) {
+				features.AddFeature(token, enable);
+			}
+		}
+
+		if (comma == std::string::npos) {
+			break;
+		}
+		start = comma + 1;
+	}
+}
+
+llvm::Expected<llvm::orc::JITTargetMachineBuilder>
+create_host_jit_target_machine_builder(const llvmbpf_vm &vm)
+{
+	auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
+	if (!jtmb) {
+		return jtmb.takeError();
+	}
+
+	if (!vm.get_target_cpu().empty()) {
+		jtmb->setCPU(vm.get_target_cpu());
+	}
+	if (!vm.get_target_features().empty()) {
+		apply_target_feature_overrides(
+			jtmb->getFeatures(), vm.get_target_features());
+	}
+	return std::move(*jtmb);
+}
+
+std::unique_ptr<llvm::TargetMachine>
+create_host_target_machine_or_throw(const llvmbpf_vm &vm)
+{
+	auto jtmb = create_host_jit_target_machine_builder(vm);
+	if (!jtmb) {
+		throw std::runtime_error(llvm::toString(jtmb.takeError()));
+	}
+
+	auto target_machine = jtmb->createTargetMachine();
+	if (!target_machine) {
+		throw std::runtime_error(llvm::toString(target_machine.takeError()));
+	}
+	return std::move(*target_machine);
+}
+
 } // namespace
 
 bool llvm_bpf_jit_context::inline_array_map_lookup_helpers(llvm::Module &module)
@@ -471,13 +540,6 @@ std::vector<uint8_t> llvm_bpf_jit_context::do_aot_compile(
 	SPDLOG_DEBUG("AOT: start");
 	if (auto module = generateModule(extFuncNames, lddwHelpers, false);
 	    module) {
-#if LLVM_VERSION_MAJOR >= 21
-		llvm::Triple defaultTargetTriple(llvm::sys::getDefaultTargetTriple());
-		SPDLOG_DEBUG("AOT: target triple: {}", defaultTargetTriple.str());
-#else
-		auto defaultTargetTriple = llvm::sys::getDefaultTargetTriple();
-		SPDLOG_DEBUG("AOT: target triple: {}", defaultTargetTriple);
-#endif
 		return module->withModuleDo([&](auto &module)
 						    -> std::vector<uint8_t> {
 			if (print_ir) {
@@ -485,25 +547,10 @@ std::vector<uint8_t> llvm_bpf_jit_context::do_aot_compile(
 			}
 			optimizeModule(module, vm.optimization_level,
 				       vm.disabled_passes_, vm.log_passes_);
-			module.setTargetTriple(defaultTargetTriple);
-			std::string error;
-			auto target = TargetRegistry::lookupTarget(
-				defaultTargetTriple, error);
-			if (!target) {
-				SPDLOG_ERROR(
-					"AOT: Failed to get local target: {}",
-					error);
-				throw std::runtime_error(
-					"Unable to get local target");
-			}
-			auto targetMachine = target->createTargetMachine(
-				defaultTargetTriple, "generic", "",
-				TargetOptions(), Reloc::PIC_);
-			if (!targetMachine) {
-				SPDLOG_ERROR("Unable to create target machine");
-				throw std::runtime_error(
-					"Unable to create target machine");
-			}
+			auto targetMachine =
+				create_host_target_machine_or_throw(vm);
+			module.setTargetTriple(
+				targetMachine->getTargetTriple().str());
 			module.setDataLayout(targetMachine->createDataLayout());
 			SmallVector<char, 0> objStream;
 			std::unique_ptr<raw_svector_ostream> BOS =
@@ -655,7 +702,15 @@ llvm_bpf_jit_context::create_and_initialize_lljit_instance()
 		}
 	}
 #endif
-	auto jit_err = LLJITBuilder().create();
+	auto jtmb = create_host_jit_target_machine_builder(vm);
+	if (!jtmb) {
+		exitOnErr(jtmb.takeError());
+		return std::make_tuple(nullptr, std::vector<std::string>{},
+				       std::vector<std::string>{});
+	}
+	LLJITBuilder jit_builder;
+	jit_builder.setJITTargetMachineBuilder(std::move(*jtmb));
+	auto jit_err = jit_builder.create();
 	if (!jit_err) {
 		exitOnErr(jit_err.takeError());
 		return std::make_tuple(nullptr, std::vector<std::string>{},
