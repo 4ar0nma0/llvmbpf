@@ -311,12 +311,25 @@ llvm::Expected<int> emitCondJmpWithDstAndSrc(
 
 llvm::Expected<int>
 emitExtFuncCall(llvm::IRBuilder<> &builder, const ebpf_inst &inst,
-		const std::map<std::string, llvm::Function *> &extFunc,
+		std::map<std::string, llvm::Function *> &extFunc,
 		llvm::Value **regs, llvm::FunctionType *helperFuncTy,
-		uint16_t pc, llvm::BasicBlock *exitBlk)
+		uint16_t pc, llvm::BasicBlock *exitBlk,
+		bool allow_implicit_external, bool kernel_compatible_mode)
 {
 	auto funcNameToCall = ext_func_sym(inst.imm);
-	if (auto itr = extFunc.find(funcNameToCall); itr != extFunc.end()) {
+	auto itr = extFunc.find(funcNameToCall);
+	if (itr == extFunc.end() && allow_implicit_external) {
+		auto *module = builder.GetInsertBlock()->getModule();
+		assert(module != nullptr);
+		auto *decl = module->getFunction(funcNameToCall);
+		if (!decl) {
+			decl = llvm::Function::Create(helperFuncTy,
+						      llvm::Function::ExternalLinkage,
+						      funcNameToCall, module);
+		}
+		itr = extFunc.emplace(funcNameToCall, decl).first;
+	}
+	if (itr != extFunc.end()) {
 		SPDLOG_DEBUG("Emitting ext func call to {} name {} at pc {}",
 			     inst.imm, funcNameToCall, pc);
 		auto callInst = builder.CreateCall(
@@ -334,10 +347,19 @@ emitExtFuncCall(llvm::IRBuilder<> &builder, const ebpf_inst &inst,
 						   regs[5]),
 
 			});
-		builder.CreateStore(callInst, regs[0]);
-		// for bpf_tail_call, just exit after calling the helper, which
-		// simulates the behavior of kernel
-		if (inst.imm == 12) {
+
+		// Kernel verifier models bpf_tail_call() as RET_VOID: the helper may
+		// not return, and on the fallthrough path R0 must remain unreadable
+		// until the original program writes it. Storing the synthetic call
+		// result into regs[0] or forcing a shared exit block introduces an
+		// invalid R0 read in round-tripped programs.
+		if (!(kernel_compatible_mode && inst.imm == 12)) {
+			builder.CreateStore(callInst, regs[0]);
+		}
+
+		// The userspace llvmbpf runtime does not implement real kernel tail
+		// calls, so keep the historical "exit after helper 12" behavior there.
+		if (inst.imm == 12 && !kernel_compatible_mode) {
 			builder.CreateBr(exitBlk);
 		}
 		return 0;

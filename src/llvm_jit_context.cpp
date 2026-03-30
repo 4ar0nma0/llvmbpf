@@ -621,7 +621,9 @@ std::vector<uint8_t> llvm_bpf_jit_context::do_aot_compile(bool print_ir)
 		}
 	};
 	// Only map_val will have a chance to be called at runtime
-	tryDefineLddwHelper(LDDW_HELPER_MAP_VAL, (void *)vm.map_val);
+	if (!vm.kernel_compatible_mode_) {
+		tryDefineLddwHelper(LDDW_HELPER_MAP_VAL, (void *)vm.map_val);
+	}
 	// These symbols won't be used at runtime
 	// tryDefineLddwHelper(LDDW_HELPER_MAP_BY_FD, (void *)vm.map_by_fd);
 	// tryDefineLddwHelper(LDDW_HELPER_MAP_BY_IDX, (void *)vm.map_by_idx);

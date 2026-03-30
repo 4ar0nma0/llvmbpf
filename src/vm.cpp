@@ -247,6 +247,11 @@ int llvmbpf_vm::set_log_passes(bool enabled) noexcept
 	return 0;
 }
 
+void llvmbpf_vm::set_kernel_compatible_mode(bool enabled) noexcept
+{
+	kernel_compatible_mode_ = enabled;
+}
+
 const std::string &llvmbpf_vm::get_target_cpu() const noexcept
 {
 	return target_cpu_;

@@ -97,6 +97,7 @@ class llvmbpf_vm {
 	int set_disabled_passes(
 		const std::vector<std::string> &pass_names) noexcept;
 	int set_log_passes(bool enabled) noexcept;
+	void set_kernel_compatible_mode(bool enabled) noexcept;
 	const std::string &get_target_cpu() const noexcept;
 	const std::string &get_target_features() const noexcept;
 	const std::vector<std::string> &get_disabled_passes() const noexcept;
@@ -142,6 +143,7 @@ class llvmbpf_vm {
 	std::string target_features_;
 	std::vector<std::string> disabled_passes_;
 	bool log_passes_ = false;
+	bool kernel_compatible_mode_ = false;
 
 	std::optional<precompiled_ebpf_function> jitted_function = std::nullopt;
 };
